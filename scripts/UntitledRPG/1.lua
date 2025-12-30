@@ -1,3 +1,8 @@
+-- [맨 위에 추가하세요]
+if game.Players.LocalPlayer.Character then
+    game.Players.LocalPlayer.Character.Humanoid.PlatformStand = false -- 굳음 해제
+end
+
 -- [[ 게임 로딩 대기: 게임이 완전히 로드될 때까지 기다립니다 ]]
 if not game:IsLoaded() then
     game.Loaded:Wait()
@@ -10,58 +15,6 @@ local LocalPlayer = Players.LocalPlayer
 repeat
     task.wait()
 until LocalPlayer
-
--- [[ 1. 클린 초기화 (Clean Init) ]]
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-
--- 기존의 무식한 훅(Kick 방지, wait 9e9 등)은 모두 삭제됨.
--- 대신 '네트워크 스푸핑'을 위한 준비만 합니다.
-
--- [[ 2. 네트워크 필터링 (Silent Packet Filter) ]]
--- 게임이 서버로 보내는 모든 신호(FireServer)를 검문합니다.
-local mt = getrawmetatable(game)
-local oldNamecall = mt.__namecall
-setreadonly(mt, false)
-
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    -- 게임이 서버로 무언가 보내려고 할 때 (FireServer)
-    if method == "FireServer" and self:IsA("RemoteEvent") then
-        
-        -- [차단할 리모트 목록]
-        -- 리모트 스파이에서 확인된 '감지용' 리모트 이름들을 여기에 적습니다.
-        -- 예: "Error", "Log", "Ban", "Admins" 등이 이름에 포함된 경우
-        local remoteName = self.Name
-
-        if remoteName == "Error" or remoteName == "Log" or remoteName == "AnalyticsPipeline" then
-            -- 이 리모트는 서버로 보내지 않고 조용히 폐기(Drop)합니다.
-            -- 기존처럼 wait(9e9)를 쓰지 않으므로 '멈춤' 현상이 없어 서버가 눈치채지 못합니다.
-            return nil 
-        end
-
-        -- [데이터 위조 (Spoofing) - 선택 사항]
-        -- 만약 특정 리모트의 데이터를 바꿔치기하고 싶다면 여기서 args를 수정합니다.
-        -- 예: 데미지 관련 데이터가 비정상적일 때 정상 수치로 변경 등
-    end
-
-    -- Kick 함수 호출 감지 (서버가 아닌 로컬 스크립트가 킥을 시도할 경우)
-    if method == "Kick" then
-        -- 킥 명령을 무시하되, 서버 연결을 끊지 않고 자연스럽게 넘깁니다.
-        return nil
-    end
-
-    -- 문제가 없는 정상적인 신호는 그대로 서버로 보냅니다.
-    return oldNamecall(self, ...)
-end)
 
 
 -- [[ 서비스 및 기본 변수 정의 ]]
@@ -234,10 +187,16 @@ local function calculatePerfectCFrame(targetPos, distanceOffset, attackDirection
 end
 
 
--- [[ 오토팜 시작 함수 (원본 로직 + 자동 클릭 토글) ]]
+-- [[ 오토팜 시작 함수 (수정됨: 타겟 없을 시 공중 대기) ]]
 local function startAutoFarm()
     -- 기존 연결 해제
-    if AutoFarmConnection then AutoFarmConnection:Disconnect() end
+    if AutoFarmConnection then 
+        AutoFarmConnection:Disconnect()
+        AutoFarmConnection = nil
+    end
+
+    -- [추가] 대기 위치를 저장할 변수
+    local waitCFrame = nil 
 
     AutoFarmConnection = RunService.Heartbeat:Connect(function()
         local character = LocalPlayer.Character
@@ -247,28 +206,51 @@ local function startAutoFarm()
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if not humanoid or not hrp then return end
 
-        -- 내 캐릭터가 죽으면 타겟 초기화
+        -- 체력 없으면 타겟 초기화
         if humanoid.Health <= 0 then
             AutoFarmConfig.CurrentTarget = nil
+            waitCFrame = nil -- 죽으면 대기 위치도 초기화
             return
         end
 
-        -- 오토팜 꺼지면 물리 상태 복구 후 중단
+        -- 오토팜 꺼지면 종료
         if not AutoFarmConfig.Enabled then
             humanoid.PlatformStand = false
+            waitCFrame = nil
             return
         end
 
-        -- 타겟 몹이 죽었거나 없으면 새 타겟 탐색
+        -- 타겟 몹 상태 확인
         if AutoFarmConfig.CurrentTarget and isMobDead(AutoFarmConfig.CurrentTarget) then
             AutoFarmConfig.CurrentTarget = nil
         end
+        
+        -- 타겟이 없으면 새로 찾기 시도
         if not AutoFarmConfig.CurrentTarget then
             AutoFarmConfig.CurrentTarget = findTargetMob()
         end
 
         local currentTarget = AutoFarmConfig.CurrentTarget
-        if not currentTarget then return end
+
+        -- [[ 🛑 핵심 수정 구간: 타겟이 없을 때 대기 로직 ]] 
+        if not currentTarget then
+            -- 물리력 초기화 (낙하 방지)
+            hrp.Velocity = Vector3.new(0, 0, 0)
+            
+            if not waitCFrame then
+                -- 아직 대기 위치가 잡히지 않았다면? 
+                -- 현재 위치에서 Y축으로 10만큼 위로 잡음 (높이 조절 가능)
+                waitCFrame = hrp.CFrame * CFrame.new(0, 10, 0)
+            end
+            
+            -- 캐릭터를 대기 위치에 고정
+            hrp.CFrame = waitCFrame 
+            return
+        else
+            -- 타겟을 찾았다면 대기 위치 변수 초기화 (다음 번을 위해)
+            waitCFrame = nil
+        end
+        -- [[ 🛑 수정 구간 끝 ]]
 
         local targetRootPart = currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindChild("HRP")
         if not targetRootPart then
@@ -276,42 +258,30 @@ local function startAutoFarm()
             return
         end
 
-        -- [원본 로직] 타겟 위치 계산 (높이 오프셋 적용) [cite: 552]
+        -- [이동 로직] 타겟 위치 계산
         local targetPos = Vector3.new(
             targetRootPart.Position.X,
             targetRootPart.Position.Y + AutoFarmConfig.HeightOffset,
             targetRootPart.Position.Z
         )
 
-        -- [원본 로직] 최종 이동 위치 계산 및 이동 [cite: 553]
+        -- [이동 로직] 최종 위치 및 방향 계산
         local finalCFrame = calculatePerfectCFrame(targetPos, AutoFarmConfig.Distance, AttackDirection)
         hrp.CFrame = finalCFrame
 
-        -- [원본 로직] 네트워크 소유권을 로컬 플레이어로 설정하여 버벅임 방지
-        pcall(function()
-            hrp:SetNetworkOwner(LocalPlayer)
-        end)
+        -- 네트워크 권한 설정
+        pcall(function() hrp:SetNetworkOwner(LocalPlayer) end)
 
-        -- [원본 로직] 캐릭터가 넘어지거나 떨어지지 않도록 고정 (낙하 방지 핵심) [cite: 553]
-        humanoid.PlatformStand = true 
-
-        -- [원본 로직] 물리 속도 초기화 (미끄러짐/밀려남 방지) [cite: 554]
-        hrp.Velocity = Vector3.new()
-        hrp.RotVelocity = Vector3.new()
-        hrp.AssemblyLinearVelocity = Vector3.new()
-        hrp.AssemblyAngularVelocity = Vector3.new()
-
-        -- 공격 속도 제한 (0.08초)
+        -- [공격 로직]
         local currentTime = tick()
         if currentTime - lastAttackTime >= 0.08 then
-            -- [수정됨] 토글이 켜져 있을 때만 클릭 공격 실행
             if AutoFarmConfig.AutoClickEnabled then
                 attack()
             end
             lastAttackTime = currentTime
         end
 
-        -- 오토 스킬 사용 [cite: 555]
+        -- [스킬 로직]
         if AutoFarmConfig.AutoSkillEnabled then
             if currentTime - lastSkillTime >= 2 then
                 if AutoFarmConfig.Skills.E then fireSkill("E") end
@@ -322,7 +292,6 @@ local function startAutoFarm()
         end
     end)
 end
-
 
 -- [[ 매크로 방지 우회 함수 (Anti-Macro) ]]
 -- 화면에 뜨는 "다음 숫자를 입력해주세요" GUI를 찾아 자동으로 입력하여 우회
@@ -1696,14 +1665,33 @@ CharLeftGroup:AddToggle('AntiAFKToggle', {
     end
 })
 
--- [수정된 속도 강제 적용 버튼]
+-- [[ 핵심 수정 부분: 속도 강제 적용 로직 추가 ]] --
 CharLeftGroup:AddToggle('LoopToggle', {
-    Text = '속도 강제 적용',
-    Default = false, -- 평소에는 꺼두세요 (스킬 사용을 위해)
+    Text = '속도 강제 적용', 
+    Default = true,
+    Tooltip = '체크 시 설정한 속도와 점프력을 계속 유지합니다.',
     Callback = function(Value)
-        CharacterSettings.LoopEnabled = Value -- [중요] 이 줄이 있어야 버튼이 작동합니다!
+        CharacterSettings.LoopEnabled = Value
     end
 })
+
+-- 매 프레임마다 속도를 강제로 적용하는 루프 (이게 없어서 작동 안 했던 것임)
+game:GetService("RunService").Heartbeat:Connect(function()
+    -- '속도 강제 적용'이 켜져있고, 캐릭터가 존재할 때만 실행
+    if CharacterSettings.LoopEnabled and LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            -- 현재 설정된 값으로 강제 변경
+            humanoid.WalkSpeed = CharacterSettings.WalkSpeed
+            humanoid.JumpPower = CharacterSettings.JumpPower
+            
+            -- 오토팜 사용 시 엉키는 것을 방지하기 위해 사용
+            if humanoid.UseJumpPower == false then
+                humanoid.UseJumpPower = true
+            end
+        end
+    end
+end)
 
 -- 노클립 토글
 NoClipRightGroup:AddToggle('NoClipToggle', {
@@ -1732,20 +1720,6 @@ EspGroup:AddToggle('PlayerESP_Toggle', {
         setPlayerESP(Value)
     end
 })
-
--- 속도/점프력 지속 적용 (게임 내 강제 변경 방지)
-RunService.Stepped:Connect(function()
-    if CharacterSettings.LoopEnabled then
-        local character = LocalPlayer.Character
-        if character then
-            local humanoid = character:FindFirstChildOfClass("Humanoid")
-            if humanoid then
-                 humanoid.WalkSpeed = CharacterSettings.WalkSpeed
-                humanoid.JumpPower = CharacterSettings.JumpPower
-            end
-        end
-    end
-end)
 
 -- [[ 애니메이션 관련 함수 ]]
 local function getAnimFolder()
@@ -1949,6 +1923,10 @@ UserInputService.InputBegan:Connect(function(input, gp)
         ActivateMouseFix()
     end
 end)
+
+if game.Players.LocalPlayer.Character then
+    game.Players.LocalPlayer.Character.Humanoid.PlatformStand = false
+end
 
 print("Bgns1 Hub | 실행 성공")
 
