@@ -1,33 +1,70 @@
-local GameList = {
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local PlaceId = game.PlaceId
 
+-- [[ 알림 전송 함수 ]] --
+local function SendAlert(title, text)
+    StarterGui:SetCore("SendNotification", {
+        Title = title;
+        Text = text;
+        Duration = 2;
+    })
+end
+
+-- [[ 기기 감지 로직 ]] --
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- [[ 게임 리스트 설정 ]] --
+local GameList = {
     -- 제목 없는 rpg 1세계
-    [118582391303761] = "https://raw.githubusercontent.com/bgsn523/Bgns1-Hub/refs/heads/main/scripts/UntitledRPG/1.lua",
+    [118582391303761] = {
+        Default = "https://raw.githubusercontent.com/bgsn523/Bgns1-Hub/refs/heads/main/scripts/UntitledRPG/1.lua",
+        Mobile = nil 
+    },
 
     -- 제목 없는 rpg 2세계
-    [117917823443279] = "https://raw.githubusercontent.com/bgsn523/Bgns1-Hub/refs/heads/main/scripts/UntitledRPG/2.lua",
+    [117917823443279] = {
+        Default = "https://raw.githubusercontent.com/bgsn523/Bgns1-Hub/refs/heads/main/scripts/UntitledRPG/2.lua",
+        Mobile = nil 
+    },
 
     -- Blindshot
-    [118614517739521] = "https://raw.githubusercontent.com/bgsn523/Bgsn1-Hub/refs/heads/main/scripts/BlindShot/bds.lua",
-
+    [118614517739521] = {
+        Default = "https://raw.githubusercontent.com/bgsn523/Bgsn1-Hub/refs/heads/main/scripts/BlindShot/bds.lua",
+        Mobile = nil 
+    },
 }
 
 -- ==================================================================
-local PlaceId = game.PlaceId
-local ScriptUrl = GameList[PlaceId]
 
-print("[Hub] Checking current place id... " .. PlaceId)
+local GameData = GameList[PlaceId]
 
-if ScriptUrl then
-    print("[Hub] Script Found! Loading script...")
-    
-    local success, err = pcall(function()
-        loadstring(game:HttpGet(ScriptUrl))()
-    end)
+if GameData then
+    local ScriptUrl = GameData.Default
+    local DeviceName = IsMobile and "Mobile" or "PC"
 
-    if not success then
-        warn("[Hub] Failed to excute script!: " .. err)
+    -- 모바일 전용 링크 체크
+    if IsMobile and GameData.Mobile then
+        ScriptUrl = GameData.Mobile
+    end
+
+    if ScriptUrl then
+        SendAlert("Hub Loader", DeviceName .. " 스크립트 로딩 중...")
+        
+        local success, err = pcall(function()
+            loadstring(game:HttpGet(ScriptUrl))()
+        end)
+
+        if success then
+            -- 로딩 성공 알림
+            task.wait(0.5)
+            SendAlert("Success", "스크립트가 성공적으로 실행되었습니다.")
+        else
+            SendAlert("Error", "스크립트 실행 실패: " .. tostring(err))
+        end
+    else
+        SendAlert("Error", "스크립트 주소가 비어있습니다.")
     end
 else
-    warn("[Hub] This (" .. PlaceId .. ") is not available.")
-    -- loadstring(game:HttpGet("universal"))()
+    SendAlert("Not Found", "이 맵은 지원되지 않습니다 (ID: " .. PlaceId .. ")")
 end
