@@ -54,6 +54,7 @@ local MobList, MobMap = {}, {} -- 몹 리스트 및 매핑 테이블
 local AutoFarmConnection = nil -- 오토팜 루프 연결 변수
 local lastAttackTime = 0 -- 마지막 공격 시간
 local lastSkillTime = 0 -- 마지막 스킬 사용 시간
+local LastSpawnTime = 0 -- 마지막 리스폰 시간 기록용 변수
 local NoClipConnection = nil -- 노클립 루프 연결 변수
 local MobDropdownObject = nil -- UI 드롭다운 객체
 
@@ -87,6 +88,11 @@ if CharacterSettings.AntiAFKEnabled then
         end
     end)
 end
+
+-- [추가] 캐릭터가 새로 생길 때마다 시간 기록
+Players.LocalPlayer.CharacterAdded:Connect(function()
+    LastSpawnTime = tick()
+end)
 
 -- 캐릭터 객체 가져오기 (없으면 대기)
 local function getCharacter()
@@ -216,7 +222,7 @@ local function calculatePerfectCFrame(targetPos, distanceOffset, attackDirection
 end
 
 
--- [[ 오토팜 시작 함수 (수정됨: 타겟 없을 시 공중 대기) ]]
+-- [[ 오토팜 시작 함수 (수정됨: 리스폰 충돌 방지 적용) ]]
 local function startAutoFarm()
     -- 기존 연결 해제
     if AutoFarmConnection then 
@@ -224,10 +230,16 @@ local function startAutoFarm()
         AutoFarmConnection = nil
     end
 
-    -- [추가] 대기 위치를 저장할 변수
-    local waitCFrame = nil 
+    local waitCFrame = nil -- 대기 위치 저장 변수
 
     AutoFarmConnection = RunService.Heartbeat:Connect(function()
+        -- [[ 🛑 핵심 수정 1: 리스폰 직후 3초간 오토팜 로직 일시 정지 ]]
+        -- (자동 복귀 기능이 먼저 작동할 시간을 벌어줍니다)
+        if tick() - LastSpawnTime < 3 then 
+            waitCFrame = nil -- 대기 위치 초기화
+            return 
+        end
+
         local character = LocalPlayer.Character
         if not character then return end
 
@@ -235,10 +247,10 @@ local function startAutoFarm()
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if not humanoid or not hrp then return end
 
-        -- 체력 없으면 타겟 초기화
+        -- 체력 없으면 타겟 및 대기위치 초기화
         if humanoid.Health <= 0 then
             AutoFarmConfig.CurrentTarget = nil
-            waitCFrame = nil -- 죽으면 대기 위치도 초기화
+            waitCFrame = nil 
             return
         end
 
@@ -254,54 +266,46 @@ local function startAutoFarm()
             AutoFarmConfig.CurrentTarget = nil
         end
         
-        -- 타겟이 없으면 새로 찾기 시도
         if not AutoFarmConfig.CurrentTarget then
             AutoFarmConfig.CurrentTarget = findTargetMob()
         end
 
         local currentTarget = AutoFarmConfig.CurrentTarget
 
-        -- [[ 🛑 핵심 수정 구간: 타겟이 없을 때 대기 로직 ]] 
+        -- [[ 타겟이 없을 때 대기 로직 ]] 
         if not currentTarget then
-            -- 물리력 초기화 (낙하 방지)
             hrp.Velocity = Vector3.new(0, 0, 0)
             
             if not waitCFrame then
-                -- 아직 대기 위치가 잡히지 않았다면? 
-                -- 현재 위치에서 Y축으로 10만큼 위로 잡음 (높이 조절 가능)
+                -- 현재 위치에서 위로 10만큼 설정
                 waitCFrame = hrp.CFrame * CFrame.new(0, 10, 0)
             end
             
-            -- 캐릭터를 대기 위치에 고정
             hrp.CFrame = waitCFrame 
             return
         else
-            -- 타겟을 찾았다면 대기 위치 변수 초기화 (다음 번을 위해)
             waitCFrame = nil
         end
-        -- [[ 🛑 수정 구간 끝 ]]
 
+        -- 타겟이 있을 때 이동 로직
         local targetRootPart = currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindChild("HRP")
         if not targetRootPart then
             AutoFarmConfig.CurrentTarget = nil
             return
         end
 
-        -- [이동 로직] 타겟 위치 계산
         local targetPos = Vector3.new(
             targetRootPart.Position.X,
             targetRootPart.Position.Y + AutoFarmConfig.HeightOffset,
             targetRootPart.Position.Z
         )
 
-        -- [이동 로직] 최종 위치 및 방향 계산
         local finalCFrame = calculatePerfectCFrame(targetPos, AutoFarmConfig.Distance, AttackDirection)
         hrp.CFrame = finalCFrame
 
-        -- 네트워크 권한 설정
         pcall(function() hrp:SetNetworkOwner(LocalPlayer) end)
 
-        -- [공격 로직]
+        -- 공격 로직
         local currentTime = tick()
         if currentTime - lastAttackTime >= 0.08 then
             if AutoFarmConfig.AutoClickEnabled then
@@ -310,7 +314,7 @@ local function startAutoFarm()
             lastAttackTime = currentTime
         end
 
-        -- [스킬 로직]
+        -- 스킬 로직
         if AutoFarmConfig.AutoSkillEnabled then
             if currentTime - lastSkillTime >= 2 then
                 if AutoFarmConfig.Skills.E then fireSkill("E") end
