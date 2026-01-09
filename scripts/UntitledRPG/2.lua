@@ -140,12 +140,13 @@ MobList, MobMap = getMobList() -- [cite: 173]
 -- 몹이 Workspace에서 사라지거나 투명해지면 죽은 것으로 간주
 local function isMobDead(mob)
     if not (mob and mob.Parent) then return true end
-    if mob:FindFirstChild("HumanoidRootPart") then return false end
-    for _, child in pairs(mob:GetChildren()) do
-        if child:IsA("BasePart") and child.Transparency >= 0.01 then
-            return true
-        end
-    end
+    
+    local humanoid = mob:FindFirstChildOfClass("Humanoid")
+    local rootPart = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("HRP")
+
+    if not rootPart then return true end 
+    if humanoid and humanoid.Health <= 0 then return true end 
+
     return false
 end
 
@@ -206,9 +207,16 @@ local function toggleNoClip(enabled)
     end
 end
 
--- [[ 오토팜 시작 함수 (수정됨: 물리 고정 해제 + 오토클릭) ]]
+-- [[ 오토팜 시작 함수 (수정됨: 타겟 없을 시 공중 대기) ]]
 local function startAutoFarm()
-    if AutoFarmConnection then AutoFarmConnection:Disconnect() end
+    -- 기존 연결 해제
+    if AutoFarmConnection then 
+        AutoFarmConnection:Disconnect()
+        AutoFarmConnection = nil
+    end
+
+    -- [추가] 대기 위치를 저장할 변수
+    local waitCFrame = nil 
 
     AutoFarmConnection = RunService.Heartbeat:Connect(function()
         local character = LocalPlayer.Character
@@ -218,25 +226,51 @@ local function startAutoFarm()
         local hrp = character:FindFirstChild("HumanoidRootPart")
         if not humanoid or not hrp then return end
 
+        -- 체력 없으면 타겟 초기화
         if humanoid.Health <= 0 then
             AutoFarmConfig.CurrentTarget = nil
+            waitCFrame = nil -- 죽으면 대기 위치도 초기화
             return
         end
 
+        -- 오토팜 꺼지면 종료
         if not AutoFarmConfig.Enabled then
             humanoid.PlatformStand = false
+            waitCFrame = nil
             return
         end
 
+        -- 타겟 몹 상태 확인
         if AutoFarmConfig.CurrentTarget and isMobDead(AutoFarmConfig.CurrentTarget) then
             AutoFarmConfig.CurrentTarget = nil
         end
+        
+        -- 타겟이 없으면 새로 찾기 시도
         if not AutoFarmConfig.CurrentTarget then
             AutoFarmConfig.CurrentTarget = findTargetMob()
         end
 
         local currentTarget = AutoFarmConfig.CurrentTarget
-        if not currentTarget then return end
+
+        -- [[ 🛑 핵심 수정 구간: 타겟이 없을 때 대기 로직 ]] 
+        if not currentTarget then
+            -- 물리력 초기화 (낙하 방지)
+            hrp.Velocity = Vector3.new(0, 0, 0)
+            
+            if not waitCFrame then
+                -- 아직 대기 위치가 잡히지 않았다면? 
+                -- 현재 위치에서 Y축으로 10만큼 위로 잡음 (높이 조절 가능)
+                waitCFrame = hrp.CFrame * CFrame.new(0, 10, 0)
+            end
+            
+            -- 캐릭터를 대기 위치에 고정
+            hrp.CFrame = waitCFrame 
+            return
+        else
+            -- 타겟을 찾았다면 대기 위치 변수 초기화 (다음 번을 위해)
+            waitCFrame = nil
+        end
+        -- [[ 🛑 수정 구간 끝 ]]
 
         local targetRootPart = currentTarget:FindFirstChild("HumanoidRootPart") or currentTarget:FindChild("HRP")
         if not targetRootPart then
@@ -244,21 +278,21 @@ local function startAutoFarm()
             return
         end
 
-        -- 위치 계산 및 이동
+        -- [이동 로직] 타겟 위치 계산
         local targetPos = Vector3.new(
             targetRootPart.Position.X,
             targetRootPart.Position.Y + AutoFarmConfig.HeightOffset,
             targetRootPart.Position.Z
         )
 
+        -- [이동 로직] 최종 위치 및 방향 계산
         local finalCFrame = calculatePerfectCFrame(targetPos, AutoFarmConfig.Distance, AttackDirection)
         hrp.CFrame = finalCFrame
 
+        -- 네트워크 권한 설정
         pcall(function() hrp:SetNetworkOwner(LocalPlayer) end)
 
-        -- [수정] 물리 고정(PlatformStand) 제거됨 -> 자연스러운 움직임
-        
-        -- 자동 클릭 (토글 확인)
+        -- [공격 로직]
         local currentTime = tick()
         if currentTime - lastAttackTime >= 0.08 then
             if AutoFarmConfig.AutoClickEnabled then
@@ -267,7 +301,7 @@ local function startAutoFarm()
             lastAttackTime = currentTime
         end
 
-        -- 오토 스킬
+        -- [스킬 로직]
         if AutoFarmConfig.AutoSkillEnabled then
             if currentTime - lastSkillTime >= 2 then
                 if AutoFarmConfig.Skills.E then fireSkill("E") end
@@ -1626,10 +1660,8 @@ MacroGroup:AddToggle('AntiMacroToggle', {
     Callback = function(Value)
         AntiMacroEnabled = Value
         if Value then
-            print("매크로 방지 감시가 시작되었습니다.")
             Library:Notify("매크로 방지 감시 시작")
         else
-            print("매크로 방지 감시가 종료되었습니다.")
             Library:Notify("매크로 방지 감시 종료")
         end
     end
@@ -1641,7 +1673,6 @@ task.spawn(function()
         task.wait(1) -- 1초마다 매크로 창이 떴는지 검사 (너무 빠르면 렉 유발)
         
         if AntiMacroEnabled then
-            print("매크로 방지 감시중")
             pcall(function()
                 local player = game.Players.LocalPlayer
                 if not player then return end
@@ -1662,7 +1693,6 @@ task.spawn(function()
                             -- 숫자가 있고, 입력창이 비어있거나 다르면 입력
                             if targetNum and inputTextBox.Text ~= targetNum then
                                 inputTextBox.Text = targetNum
-                                print("매크로 숫자 감지 및 입력됨: " .. targetNum)
                             end
                         end
                     end
