@@ -1808,29 +1808,49 @@ MacroGroup:AddToggle('AntiMacroToggle', {
 -- 2. 감시 및 자동 입력 로직 (백그라운드에서 항상 대기)
 task.spawn(function()
     while true do
-        task.wait(1) -- 1초마다 매크로 창이 떴는지 검사 (너무 빠르면 렉 유발)
+        task.wait(1) -- 1초 간격 검사
         
         if AntiMacroEnabled then
             pcall(function()
                 local player = game.Players.LocalPlayer
                 if not player then return end
                 
-                -- 매크로 GUI 찾기 (경로: PlayerGui -> MacroGui -> Frame -> Frame)
                 local gui = player.PlayerGui:FindFirstChild("MacroGui")
-                if gui and gui:FindFirstChild("Frame") then
+                
+                -- GUI가 있고 화면에 보일 때만 작동
+                if gui and gui.Enabled and gui:FindFirstChild("Frame") then
                     local mainFrame = gui.Frame:FindFirstChild("Frame")
                     
                     if mainFrame then
                         local inputLabel = mainFrame:FindFirstChild("Input")
                         local inputTextBox = mainFrame:FindFirstChild("TextBox")
                         
+                        -- 라벨과 입력창이 모두 존재할 때
                         if inputLabel and inputTextBox then
-                            -- [핵심] 텍스트에서 "숫자"만 쏙 뽑아내기 (예: "다음 숫자... 1234" -> "1234")
+                            -- 질문에서 숫자만 추출
                             local targetNum = inputLabel.Text:match("%d+")
                             
-                            -- 숫자가 있고, 입력창이 비어있거나 다르면 입력
+                            -- 숫자가 있고, 현재 입력창 내용이 정답과 다를 때만 실행 (중복 입력 방지)
                             if targetNum and inputTextBox.Text ~= targetNum then
+                                
+                                -- 1. 텍스트 박스 활성화 (마우스로 클릭한 효과)
+                                inputTextBox:CaptureFocus()
+                                task.wait(0.1)
+                                
+                                -- 2. 정답 입력
                                 inputTextBox.Text = targetNum
+                                task.wait(0.1)
+                                
+                                -- 3. [핵심] 엔터키(Return) 누르기 시뮬레이션
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+                                task.wait(0.05)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+                                
+                                -- 4. 포커스 해제 (입력 완료 처리)
+                                inputTextBox:ReleaseFocus()
+                                
+                                print("매크로 우회: " .. targetNum .. " 입력 후 엔터 전송됨")
+                                Library:Notify("매크로 입력 완료: " .. targetNum)
                             end
                         end
                     end
