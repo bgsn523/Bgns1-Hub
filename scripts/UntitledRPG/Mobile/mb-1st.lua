@@ -330,17 +330,20 @@ MainTab:CreateButton({
     end,
 })
 
--- [[ 🛡️ 매크로 방지 우회 섹션 ]]
--- MainTab 변수가 이미 정의되어 있다고 가정합니다 (이전 코드의 오토팜 탭)
+-- [[ 🛡️ 매크로 방지 우회 V11 (Text 인식형) ]] --
+-- 주의: 아래 'MainTab'은 사용 중인 탭 변수명으로 맞춰주세요.
+local AntiMacroSection = MainTab:CreateSection("매크로 방지 우회 (V11)")
 
-MainTab:CreateSection("매크로 방지 우회")
+-- 서비스 및 변수 정의
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local GuiService = game:GetService("GuiService")
+local AntiMacroEnabled = false
 
-local AntiMacroEnabled = false -- 토글 상태 저장 변수
-
+-- [[ 1. 토글 생성 ]]
 MainTab:CreateToggle({
     Name = "매크로 방지 자동 우회",
     CurrentValue = false,
-    Flag = "AntiMacroToggle",
+    Flag = "AntiMacroV11",
     Callback = function(Value)
         AntiMacroEnabled = Value
         if Value then
@@ -350,49 +353,113 @@ MainTab:CreateToggle({
                 Duration = 3,
                 Image = 4483362458,
             })
-        else
-            Rayfield:Notify({
-                Title = "시스템 알림",
-                Content = "매크로 방지 감시가 종료되었습니다.",
-                Duration = 3,
-                Image = 4483362458,
-            })
         end
     end,
 })
 
--- [[ 🕵️‍♂️ 감시 및 자동 입력 로직 (백그라운드 실행) ]]
+-- [[ 2. 헬퍼 함수 ]]
+
+-- GUI 요소 중앙 클릭 함수 (상단바 오차 보정)
+local function clickGuiObject(obj)
+    if not obj or not obj.Visible or not obj.Active then return end
+    
+    local pos = obj.AbsolutePosition
+    local size = obj.AbsoluteSize
+    local topbarInset = GuiService:GetGuiInset().Y
+    
+    local x = pos.X + (size.X / 2)
+    local y = pos.Y + (size.Y / 2) + topbarInset
+
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+    task.wait(0.05)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+end
+
+-- 텍스트로 숫자 버튼 찾기 (랜덤 키패드 대응)
+local function findDigitButton(keyFrame, digit)
+    for _, btn in ipairs(keyFrame:GetChildren()) do
+        if (btn:IsA("TextButton") or btn:IsA("ImageButton")) and btn.Text == digit then
+            return btn
+        end
+    end
+    return nil
+end
+
+-- [[ 3. 감지 및 우회 루프 ]]
 task.spawn(function()
     while true do
-        task.wait(1) -- 1초마다 매크로 창이 떴는지 검사 (너무 빠르면 렉 유발 가능성)
+        task.wait(1) -- 1초마다 검사
         
         if AntiMacroEnabled then
             pcall(function()
                 local player = game:GetService("Players").LocalPlayer
                 if not player then return end
-                
-                -- 매크로 GUI 찾기 (경로: PlayerGui -> MacroGui -> Frame -> Frame)
-                local playerGui = player:FindFirstChild("PlayerGui")
-                if not playerGui then return end
 
-                local macroGui = playerGui:FindFirstChild("MacroGui")
-                if macroGui then
-                    local frame1 = macroGui:FindFirstChild("Frame")
-                    if frame1 then
-                        local mainFrame = frame1:FindFirstChild("Frame")
+                local gui = player.PlayerGui:FindFirstChild("MacroGui")
+                
+                if gui and gui.Enabled then
+                    -- GUI 구조 탐색 (게임 업데이트 대비 유연하게)
+                    local rootFrame = gui:FindFirstChild("Frame") or gui:FindFirstChild("MacroClient") or gui
+                    if not rootFrame then return end
+                    
+                    local displayFrame = rootFrame:FindFirstChild("Frame")
+                    local keyFrame = rootFrame:FindFirstChild("KeyInputFrame")
+                    local resetFrame = rootFrame:FindFirstChild("KeyReset")
+                    
+                    if displayFrame and keyFrame then
+                        -- 숫자 표시 라벨 및 입력창 찾기
+                        local inputLabel = displayFrame:FindFirstChild("Input") or displayFrame:FindFirstChildWhichIsA("TextLabel")
+                        local outputBox = displayFrame:FindFirstChild("TextBox")
                         
-                        if mainFrame then
-                            local inputLabel = mainFrame:FindFirstChild("Input")
-                            local inputTextBox = mainFrame:FindFirstChild("TextBox")
+                        if inputLabel and outputBox then
+                            -- 정규식으로 4자리 숫자 추출
+                            local targetNum = inputLabel.Text:match("%d%d%d%d")
                             
-                            if inputLabel and inputTextBox then
-                                -- [핵심] 텍스트에서 "숫자"만 추출 (예: "다음 숫자... 1234" -> "1234")
-                                local targetNum = inputLabel.Text:match("%d+")
+                            -- 숫자가 존재하고, 아직 입력하지 않았다면 실행
+                            if targetNum and outputBox.Text ~= targetNum then
                                 
-                                -- 숫자가 존재하고, 입력창이 비어있거나 다르면 입력 실행
-                                if targetNum and inputTextBox.Text ~= targetNum then
-                                    inputTextBox.Text = targetNum
+                                Rayfield:Notify({
+                                    Title = "매크로 감지됨",
+                                    Content = "목표 숫자: " .. targetNum .. " 입력 시작...",
+                                    Duration = 3,
+                                    Image = 4483362458,
+                                })
+                                
+                                -- 1단계: TextBox 클릭해서 포커스 (키패드 활성화)
+                                if not keyFrame.Visible then
+                                    clickGuiObject(outputBox)
+                                    task.wait(0.8)
                                 end
+                                
+                                -- 2단계: 리셋 버튼 눌러서 기존 입력 지우기
+                                local resetBtn = resetFrame and resetFrame:FindFirstChild("TextButton")
+                                if resetBtn then
+                                    for i = 1, 5 do
+                                        if outputBox.Text == "" then break end
+                                        clickGuiObject(resetBtn)
+                                        task.wait(0.4)
+                                    end
+                                end
+                                
+                                task.wait(0.5)
+                                
+                                -- 3단계: 숫자 입력 (버튼 Text를 읽어서 클릭)
+                                if outputBox.Text == "" then
+                                    for i = 1, #targetNum do
+                                        local digit = string.sub(targetNum, i, i)
+                                        local btn = findDigitButton(keyFrame, digit)
+                                        
+                                        if btn then
+                                            clickGuiObject(btn)
+                                            task.wait(0.35) -- 입력 씹힘 방지 딜레이
+                                        else
+                                            warn("숫자 버튼을 찾을 수 없습니다: " .. digit)
+                                        end
+                                    end
+                                    print("매크로 우회 입력 완료: " .. targetNum)
+                                end
+                                
+                                task.wait(2.5) -- 처리 후 대기
                             end
                         end
                     end
